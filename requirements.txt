@@ -7,11 +7,4 @@ torch==2.11.0
 transformers==5.6.2
 tensorflow==2.19.0
 numpy>=1.26.0,<2.2.0
-<<<<<<< HEAD
-peft
-accelerate
-Pillow
 huggingface-hub
-=======
-huggingface-hub
->>>>>>> a5c4c0b76ee11beb16eaad2a60ecdd0541d61b28

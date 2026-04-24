@@ -4,7 +4,7 @@ from PIL import Image
 import os
 
 # Путь к папке с метриками
-BASE_DIR = "Metrics/Reviews/"
+BASE_DIR = "Metrics/News/"
 
 st.set_page_config(
     page_title="Визуализация метрик",
@@ -64,34 +64,69 @@ if img:
 
 st.divider()
 
-# 4. Важность признаков
-st.header("🔍 Важность признаков")
-col1, col2 = st.columns(2)
-with col1:
-    st.subheader("Logistic Regression – Top 20")
-    img = load_image("logreg_top20_lollipop.png")
+# 4. Топ-20 признаков по классам (макет 2-2-1)
+st.header("🔝 Топ-20 признаков по классам")
+
+# Таблица из CSV (если есть)
+csv_class_path = os.path.join(BASE_DIR, "top20_features_per_class.csv")
+if os.path.exists(csv_class_path):
+    top20_df = pd.read_csv(csv_class_path)
+    st.dataframe(top20_df, use_container_width=True)
+else:
+    st.info("Файл top20_features_per_class.csv не найден.")
+
+# Галерея изображений: 2 колонки (по 2 класса), затем 1 класс по центру
+classes = ["спорт", "крипта", "технологии", "мода", "финансы"]
+
+# Группировка: по два в колонки, последний в центр
+group1 = classes[:2]   # спорт, крипта
+group2 = classes[2:4]  # технологии, мода
+center_class = classes[4]  # финансы
+
+# Верхний ряд: две колонки
+col_left, col_right = st.columns(2)
+
+with col_left:
+    for cls in group1:
+        img_name = f"top20_features_{cls}.png"
+        img = load_image(img_name)
+        if img:
+            st.image(img, caption=f"Топ-20 – {cls.capitalize()}", use_container_width=True)
+        else:
+            st.warning(f"{img_name} не найден")
+
+with col_right:
+    for cls in group2:
+        img_name = f"top20_features_{cls}.png"
+        img = load_image(img_name)
+        if img:
+            st.image(img, caption=f"Топ-20 – {cls.capitalize()}", use_container_width=True)
+        else:
+            st.warning(f"{img_name} не найден")
+
+# Нижний ряд: один класс по центру
+center_cols = st.columns([1, 2, 1])
+with center_cols[1]:
+    img_name = f"top20_features_{center_class}.png"
+    img = load_image(img_name)
     if img:
-        st.image(img, use_container_width=True)
-with col2:
-    st.subheader("Random Forest")
-    img = load_image("rf_importances.png")
-    if img:
-        st.image(img, use_container_width=True)
+        st.image(img, caption=f"Топ-20 – {center_class.capitalize()}", use_container_width=True)
+    else:
+        st.warning(f"{img_name} не найден")
 
 st.divider()
 
 # 5. Кривые обучения
 st.header("📈 Кривые обучения")
-
 col1, col2 = st.columns(2)
 with col1:
     st.subheader("Logistic Regression")
-    img = load_image("learning_curve_Logistic Regression.png")
+    img = load_image("learning_curve_Logistic_Regression.png")
     if img:
         st.image(img, use_container_width=True)
 with col2:
     st.subheader("Random Forest")
-    img = load_image("learning_curve_Random Forest.png")
+    img = load_image("learning_curve_Random_Forest.png")
     if img:
         st.image(img, use_container_width=True)
 
@@ -101,6 +136,6 @@ if img:
     st.image(img, use_container_width=True)
 
 st.subheader("ImprovedTinyBERT")
-img = load_image("bert_training_curves.png")
+img = load_image("ImprovedTinyBERTFull_learning_curve.png")
 if img:
     st.image(img, use_container_width=True)

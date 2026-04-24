@@ -26,6 +26,7 @@ import json
 
 import warnings
 warnings.filterwarnings('ignore', category=UserWarning, module='sklearn')
+
 # ------------------------------------------------------------
 # 1. Утилиты загрузки файлов с Hugging Face
 # ------------------------------------------------------------
@@ -306,23 +307,24 @@ def plot_confidence(proba, model_name):
     st.pyplot(fig)
 
 # ------------------------------------------------------------
-# 5. Загрузка отзывов из JSONL
+# 5. Загрузка отзывов из JSONL с реальными метками
 # ------------------------------------------------------------
 FALLBACK_REVIEWS = [
-    "В регистратуре были очень грубые, хамоватые сотрудницы. Врач ничего не объяснил, я осталась недовольна.",
-    "Отличная поликлиника! Приняли быстро, доктор внимательный, всё подробно рассказал. Рекомендую.",
-    "В очереди просидел почти час, но сам приём прошёл хорошо, врач профессионал.",
-    "Ужасное отношение! Не вернусь сюда больше. Сплошное разочарование.",
-    "Персонал приветливый, чисто, оборудование новое. Очень понравилось.",
-    "Неплохая поликлиника, но есть куда расти. Регистратура работает медленно.",
-    "Замечательный врач и медсестры! Внимательные и заботливые. Огромное спасибо.",
-    "Полный бардак, запись потеряли, ждал зря. Никому не советую.",
-    "Быстро, чётко, без проволочек – прекрасный сервис.",
-    "Обслуживание среднее, но в целом неплохо. Могло быть и хуже."
+    {"content": "В регистратуре были очень грубые, хамоватые сотрудницы. Врач ничего не объяснил, я осталась недовольна.", "label": 0},
+    {"content": "Отличная поликлиника! Приняли быстро, доктор внимательный, всё подробно рассказал. Рекомендую.", "label": 1},
+    {"content": "В очереди просидел почти час, но сам приём прошёл хорошо, врач профессионал.", "label": 1},
+    {"content": "Ужасное отношение! Не вернусь сюда больше. Сплошное разочарование.", "label": 0},
+    {"content": "Персонал приветливый, чисто, оборудование новое. Очень понравилось.", "label": 1},
+    {"content": "Неплохая поликлиника, но есть куда расти. Регистратура работает медленно.", "label": 1},
+    {"content": "Замечательный врач и медсестры! Внимательные и заботливые. Огромное спасибо.", "label": 1},
+    {"content": "Полный бардак, запись потеряли, ждал зря. Никому не советую.", "label": 0},
+    {"content": "Быстро, чётко, без проволочек – прекрасный сервис.", "label": 1},
+    {"content": "Обслуживание среднее, но в целом неплохо. Могло быть и хуже.", "label": 1},
 ]
 
 @st.cache_data
 def load_reviews_from_jsonl(filename="Datasets/healthcare_facilities_reviews.jsonl"):
+    """Загружает список словарей {content, label} из JSONL, иначе fallback."""
     try:
         with open(filename, 'r', encoding='utf-8') as f:
             reviews = []
@@ -330,15 +332,24 @@ def load_reviews_from_jsonl(filename="Datasets/healthcare_facilities_reviews.jso
                 line = line.strip()
                 if line:
                     data = json.loads(line)
-                    if 'content' in data:
-                        reviews.append(data['content'])
+                    # Ожидаем поля 'content' и 'label'
+                    if 'content' in data and 'label' in data:
+                        reviews.append({"content": data['content'], "label": int(data['label'])})
             if not reviews:
-                st.warning("Файл с отзывами пуст, используются примеры по умолчанию.")
+                st.warning("Файл с отзывами не содержит подходящих записей, используются примеры по умолчанию.")
                 return FALLBACK_REVIEWS
             return reviews
     except FileNotFoundError:
         st.warning(f"Файл {filename} не найден. Используются примеры по умолчанию.")
         return FALLBACK_REVIEWS
+
+def get_sentiment_display(label):
+    """Преобразует метку (0/1) в читаемое имя с эмодзи."""
+    if label == 0:
+        return "Негативный 😡"
+    elif label == 1:
+        return "Позитивный 😊"
+    return str(label)
 
 # ------------------------------------------------------------
 # 6. Интерфейс страницы
@@ -351,6 +362,8 @@ if 'input_text' not in st.session_state:
     st.session_state.input_text = ""
 if 'random_count' not in st.session_state:
     st.session_state.random_count = 0
+if 'true_sentiment' not in st.session_state:
+    st.session_state.true_sentiment = None
 
 with st.spinner("Загружаем модели..."):
     vectorizer = load_tfidf_vectorizer()
@@ -373,11 +386,19 @@ if 'preds' not in st.session_state:
 col_rand, _ = st.columns([0.2, 0.8])
 with col_rand:
     if st.button("🎲 Случайный отзыв"):
-        st.session_state.input_text = np.random.choice(SAMPLE_REVIEWS)
+        rand_review = np.random.choice(SAMPLE_REVIEWS)  # теперь это словарь
+        st.session_state.input_text = rand_review["content"]
+        st.session_state.true_sentiment = rand_review["label"]
         st.session_state.random_count += 1
         st.session_state.last_text = ''
         st.session_state.preds = None
         st.rerun()
+
+# Отображение реальной метки
+if st.session_state.true_sentiment is not None:
+    st.markdown(f"**🏷️ Настоящая тональность:** {get_sentiment_display(st.session_state.true_sentiment)}")
+else:
+    st.markdown("**🏷️ Настоящая тональность:** не выбрана")
 
 # Поле ввода
 text = st.text_area(
