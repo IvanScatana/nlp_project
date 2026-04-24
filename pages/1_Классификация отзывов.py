@@ -77,11 +77,12 @@ class ImprovedTinyBERTFull(nn.Module):
                 nn.init.zeros_(module.bias)
 
     def forward(self, input_ids, attention_mask, output_attentions=False):
+        # Всегда запрашиваем attention, чтобы визуализация работала надёжно
         bert_out = self.bert(input_ids=input_ids,
                              attention_mask=attention_mask,
-                             output_attentions=output_attentions)
+                             output_attentions=True)   # <-- принудительно True
         last_hidden = bert_out.last_hidden_state
-        attentions = bert_out.attentions if output_attentions else None
+        attentions = bert_out.attentions               # всегда будет кортеж
 
         cls_emb = last_hidden[:, 0, :]
         mean_emb = last_hidden.mean(dim=1)
@@ -136,6 +137,7 @@ def load_lstm_model():
         model = tf.keras.models.load_model(path, compile=False)
         dummy = tf.keras.preprocessing.sequence.pad_sequences([[0]], maxlen=128)
         _ = model.predict(dummy, verbose=0)
+        _ = model(tf.constant(dummy))
         return model
     except Exception as e:
         st.error(f"Ошибка загрузки LSTM: {e}")
@@ -158,7 +160,7 @@ def load_bert():
     return tokenizer, model
 
 # ------------------------------------------------------------
-# 4. Функции инференса
+# 4. Функции инференса и визуализации
 # ------------------------------------------------------------
 def predict_sklearn(model, vectorizer, text):
     t0 = time.perf_counter()
@@ -198,21 +200,145 @@ def predict_bert(tokenizer, model, text):
     return pred, proba, elapsed, inputs['input_ids'][0], attentions
 
 # ------------------------------------------------------------
-# 5. Визуализация внимания BERT и график уверенности
+# 5. Визуализация внимания BERT и градиентная карта LSTM
 # ------------------------------------------------------------
-def highlight_attention(tokenizer, input_ids, attentions, layer=-1, head=0):
-    tokens = tokenizer.convert_ids_to_tokens(input_ids)
-    cls_attn = attentions[layer][0, head, 0, :].detach().numpy()
-    norm = mcolors.Normalize(vmin=cls_attn.min(), vmax=cls_attn.max())
+def highlight_attention(tokenizer, input_ids, attentions, text, layer=-1, head=0):
+    """
+    Группирует подслова BPE в целые слова и показывает внимание от CLS‑токена.
+    Служебные токены исключаются, цвет текста всегда чёрный.
+    """
+    if attentions is None or len(attentions) == 0:
+        return "<div>Карта внимания недоступна.</div>"
+    try:
+        # Получаем word_ids для каждого токена (None для спецтокенов)
+        encoded = tokenizer(text, return_offsets_mapping=True, truncation=True, padding=True)
+        word_ids = encoded.word_ids()
+
+        tokens = tokenizer.convert_ids_to_tokens(input_ids)
+        attn = attentions[layer][0, head, 0, :].detach().numpy()
+
+        # Группируем внимание по словам
+        word_attn = {}
+        word_token_ids = {}  # для восстановления слова
+        for i, tok in enumerate(tokens):
+            wid = word_ids[i]
+            if wid is None:  # спецтокены
+                continue
+            if wid not in word_attn:
+                word_attn[wid] = []
+                word_token_ids[wid] = []
+            word_attn[wid].append(attn[i])
+            word_token_ids[wid].append(input_ids[i].item())
+
+        # Собираем слова и усреднённые скоры
+        words = []
+        scores = []
+        for wid in sorted(word_attn):
+            # Восстанавливаем слово из подслов
+            word_str = tokenizer.decode(word_token_ids[wid], skip_special_tokens=True).strip()
+            word_str = word_str.replace(' ', '')
+            words.append(word_str)
+            scores.append(np.mean(word_attn[wid]))
+
+        scores = np.array(scores)
+        norm = mcolors.Normalize(vmin=scores.min(), vmax=scores.max())
+        cmap = plt.colormaps['Reds']
+
+        html_parts = ['<div style="line-height:2.5; font-size:16px;">']
+        for word, score in zip(words, scores):
+            alpha = norm(score)
+            r, g, b, _ = cmap(alpha)
+            color = f"rgba({int(r*255)},{int(g*255)},{int(b*255)},1.0)"
+            html_parts.append(
+                f'<span style="background-color:{color}; color:black; '
+                f'padding:4px 6px; margin:2px; border-radius:4px; '
+                f'display:inline-block;">{word}</span>'
+            )
+        html_parts.append('</div>')
+        return "".join(html_parts)
+    except Exception as e:
+        return f"<div>Ошибка визуализации: {e}</div>"
+
+def lstm_token_importance(model, tokenizer, text, max_len=128):
+    """
+    Градиентная карта важности слов для LSTM.
+    Показывает все слова исходного текста. Неизвестные слова — серый фон.
+    """
+    if model is None:
+        return "<div>Модель LSTM недоступна.</div>"
+
+    # Извлекаем размер словаря эмбеддинга
+    emb_layer = None
+    for layer in model.layers:
+        if isinstance(layer, tf.keras.layers.Embedding):
+            emb_layer = layer
+            break
+    if emb_layer is None:
+        return "<div>Embedding слой не найден</div>"
+    vocab_size = emb_layer.input_dim  # максимальный индекс + 1
+
+    # Разбиваем текст на слова
+    from tensorflow.keras.preprocessing.text import text_to_word_sequence
+    raw_words = text_to_word_sequence(text)
+    if not raw_words:
+        return "<div>Не удалось выделить слова.</div>"
+
+    # Строим последовательность индексов, обрезая до vocab_size
+    seq = []
+    for word in raw_words:
+        idx = tokenizer.word_index.get(word, 0)
+        if idx >= vocab_size:
+            idx = 0  # неизвестное слово
+        seq.append(idx)
+
+    # Паддинг до max_len
+    padded = tf.keras.preprocessing.sequence.pad_sequences([seq],
+                                                            maxlen=max_len,
+                                                            padding='post')
+    input_tensor = tf.constant(padded, dtype=tf.int32)
+
+    # Инициализация графа
+    _ = model(input_tensor)
+
+    tail_layers = model.layers[model.layers.index(emb_layer) + 1:]
+    tail_model = tf.keras.Sequential(tail_layers)
+    dummy_emb = emb_layer(tf.constant([[0]]))
+    _ = tail_model(dummy_emb)
+
+    # Градиенты
+    with tf.GradientTape() as tape:
+        embeddings = emb_layer(input_tensor)
+        tape.watch(embeddings)
+        preds = tail_model(embeddings)
+        top_class = tf.argmax(preds[0])
+        loss = preds[0, top_class]
+
+    grads = tape.gradient(loss, embeddings)
+    importance = tf.norm(grads[0], axis=1).numpy()   # длина max_len
+
+    # Нормализация только по значимым токенам (первые len(raw_words) позиций)
+    valid_imp = importance[:len(raw_words)]
+    if valid_imp.max() > 0:
+        valid_imp_norm = valid_imp / valid_imp.max()
+    else:
+        valid_imp_norm = np.zeros_like(valid_imp)
+
     cmap = plt.colormaps['Reds']
     html_parts = ['<div style="line-height:2.5; font-size:16px;">']
-    for i, tok in enumerate(tokens):
-        alpha = norm(cls_attn[i])
-        r, g, b, _ = cmap(alpha)
-        color = f"rgba({int(r*255)},{int(g*255)},{int(b*255)},1.0)"
+    for i, word in enumerate(raw_words):
+        is_known = (seq[i] > 0)
+        if is_known:
+            alpha = valid_imp_norm[i]
+            r, g, b, _ = cmap(alpha)
+            bg_color = f"rgba({int(r*255)},{int(g*255)},{int(b*255)},1.0)"
+            title = ""
+        else:
+            bg_color = "#f0f0f0"  # светло-серый
+            title = "неизв"
         html_parts.append(
-            f'<span style="background-color:{color}; padding:4px 6px; '
-            f'margin:2px; border-radius:4px; display:inline-block;">{tok}</span>'
+            f'<span style="background-color:{bg_color}; color:black; '
+            f'padding:4px 6px; margin:2px; border-radius:4px; '
+            f'display:inline-block;" title="{title}">{word}</span>'
         )
     html_parts.append('</div>')
     return "".join(html_parts)
@@ -226,7 +352,7 @@ def plot_confidence(proba, model_name):
     st.pyplot(fig)
 
 # ------------------------------------------------------------
-# 6. Загрузка отзывов из локального JSONL-файла
+# 6. Загрузка отзывов
 # ------------------------------------------------------------
 FALLBACK_REVIEWS = [
     "В регистратуре были очень грубые, хамоватые сотрудницы. Врач ничего не объяснил, я осталась недовольна.",
@@ -243,27 +369,18 @@ FALLBACK_REVIEWS = [
 
 @st.cache_data
 def load_reviews_from_jsonl(filename="Datasets/healthcare_facilities_reviews.jsonl"):
-    """Загружает отзывы из JSONL-файла, лежащего в корне приложения.
-       Каждая строка файла – JSON с обязательным ключом 'content'.
-       Если файл не найден или пуст, возвращает примеры по умолчанию."""
     try:
         with open(filename, 'r', encoding='utf-8') as f:
-            reviews = []
-            for line in f:
-                line = line.strip()
-                if line:
-                    data = json.loads(line)
-                    if 'content' in data:
-                        reviews.append(data['content'])
-            if not reviews:
-                st.warning("Файл с отзывами пуст, используются примеры по умолчанию.")
-                return FALLBACK_REVIEWS
-            return reviews
+            reviews = [json.loads(line)['content'] for line in f if line.strip() and 'content' in line]
+        if not reviews:
+            st.warning("Файл с отзывами пуст, используются примеры по умолчанию.")
+            return FALLBACK_REVIEWS
+        return reviews
     except FileNotFoundError:
         st.warning(f"Файл {filename} не найден. Используются примеры по умолчанию.")
         return FALLBACK_REVIEWS
     except Exception as e:
-        st.warning(f"Ошибка чтения файла отзывов: {e}. Используются примеры по умолчанию.")
+        st.warning(f"Ошибка чтения: {e}. Используются примеры.")
         return FALLBACK_REVIEWS
 
 # ------------------------------------------------------------
@@ -272,13 +389,11 @@ def load_reviews_from_jsonl(filename="Datasets/healthcare_facilities_reviews.jso
 st.set_page_config(page_title="Классификация отзывов пациентов", page_icon="📊")
 st.title("📊 Сентимент‑анализ отзывов пациентов")
 
-# Инициализация состояний
 if 'input_text' not in st.session_state:
     st.session_state.input_text = ""
 if 'random_count' not in st.session_state:
     st.session_state.random_count = 0
 
-# Загрузка моделей и данных
 with st.spinner("Загружаем модели..."):
     vectorizer = load_tfidf_vectorizer()
     logreg = load_logreg()
@@ -289,7 +404,6 @@ with st.spinner("Загружаем модели..."):
 
 SAMPLE_REVIEWS = load_reviews_from_jsonl()
 
-# Инициализация сессионных переменных для предсказаний
 if 'selected_mode' not in st.session_state:
     st.session_state.selected_mode = 'all'
 if 'last_text' not in st.session_state:
@@ -297,7 +411,6 @@ if 'last_text' not in st.session_state:
 if 'preds' not in st.session_state:
     st.session_state.preds = None
 
-# ==================== КНОПКА СЛУЧАЙНОГО ОТЗЫВА ====================
 col_rand, _ = st.columns([0.2, 0.8])
 with col_rand:
     if st.button("🎲 Случайный отзыв"):
@@ -307,19 +420,16 @@ with col_rand:
         st.session_state.preds = None
         st.rerun()
 
-# ==================== ПОЛЕ ВВОДА (увеличенная высота) ====================
 text = st.text_area(
     "📝 Введите текст отзыва:",
     value=st.session_state.input_text,
-    height=250,  # увеличено для лучшей видимости длинных отзывов
+    height=250,
     key=f"text_input_widget_{st.session_state.random_count}",
     placeholder="Пример: В регистратуре нагрубили, но врач замечательный..."
 )
 st.session_state.input_text = text
 
-# ==================== КНОПКИ ВЫБОРА РЕЖИМА ====================
 col1, col2, col3, col4, col5 = st.columns(5)
-
 with col1:
     if st.button("Logistic Regression", key="btn_lr"):
         st.session_state.selected_mode = 'Logistic Regression'
@@ -338,58 +448,27 @@ with col5:
 
 st.divider()
 
-# ==================== ВЫЧИСЛЕНИЕ ПРЕДСКАЗАНИЙ (без st.info) ====================
 if text.strip():
     if text != st.session_state.last_text or st.session_state.preds is None:
         with st.spinner("Выполняется предсказание..."):
             emoji_map = {0: "😡", 1: "😊"}
             class_names = {0: "Негативный", 1: "Позитивный"}
-
             results = {}
             # LogReg
             pred_lr, proba_lr, t_lr = predict_sklearn(logreg, vectorizer, text)
-            results['Logistic Regression'] = {
-                'pred': pred_lr,
-                'proba': proba_lr,
-                'time': t_lr,
-                'class_name': class_names[pred_lr],
-                'emoji': emoji_map[pred_lr]
-            }
+            results['Logistic Regression'] = {'pred': pred_lr, 'proba': proba_lr, 'time': t_lr, 'class_name': class_names[pred_lr], 'emoji': emoji_map[pred_lr]}
             # RF
             pred_rf, proba_rf, t_rf = predict_sklearn(rf, vectorizer, text)
-            results['Random Forest'] = {
-                'pred': pred_rf,
-                'proba': proba_rf,
-                'time': t_rf,
-                'class_name': class_names[pred_rf],
-                'emoji': emoji_map[pred_rf]
-            }
+            results['Random Forest'] = {'pred': pred_rf, 'proba': proba_rf, 'time': t_rf, 'class_name': class_names[pred_rf], 'emoji': emoji_map[pred_rf]}
             # LSTM
             if lstm_model is not None:
                 pred_lstm, proba_lstm, t_lstm = predict_lstm(lstm_model, lstm_tok, text)
-                if pred_lstm is not None:
-                    results['LSTM'] = {
-                        'pred': pred_lstm,
-                        'proba': proba_lstm,
-                        'time': t_lstm,
-                        'class_name': class_names[pred_lstm],
-                        'emoji': emoji_map[pred_lstm]
-                    }
-                else:
-                    results['LSTM'] = None
+                results['LSTM'] = {'pred': pred_lstm, 'proba': proba_lstm, 'time': t_lstm, 'class_name': class_names[pred_lstm], 'emoji': emoji_map[pred_lstm]} if pred_lstm is not None else None
             else:
                 results['LSTM'] = None
             # BERT
             pred_bert, proba_bert, t_bert, input_ids, attentions = predict_bert(bert_tok, bert_model, text)
-            results['ImprovedTinyBERT'] = {
-                'pred': pred_bert,
-                'proba': proba_bert,
-                'time': t_bert,
-                'class_name': class_names[pred_bert],
-                'emoji': emoji_map[pred_bert],
-                'input_ids': input_ids,
-                'attentions': attentions
-            }
+            results['ImprovedTinyBERT'] = {'pred': pred_bert, 'proba': proba_bert, 'time': t_bert, 'class_name': class_names[pred_bert], 'emoji': emoji_map[pred_bert], 'input_ids': input_ids, 'attentions': attentions}
 
             st.session_state.preds = results
             st.session_state.last_text = text
@@ -397,63 +476,50 @@ if text.strip():
         results = st.session_state.preds
         emoji_map = {0: "😡", 1: "😊"}
         class_names = {0: "Негативный", 1: "Позитивный"}
-        for m_name, m_data in results.items():
+        for m_data in results.values():
             if m_data:
                 m_data['class_name'] = class_names[m_data['pred']]
                 m_data['emoji'] = emoji_map[m_data['pred']]
 
-    # ==================== ОТОБРАЖЕНИЕ В ЗАВИСИМОСТИ ОТ РЕЖИМА ====================
     if st.session_state.selected_mode == 'all':
         st.subheader("📋 Сводка по всем моделям")
         cols = st.columns(4)
-
-        cols[0].metric(
-            "Logistic Regression",
-            f"{results['Logistic Regression']['class_name']} {results['Logistic Regression']['emoji']}"
-        )
-        cols[0].write(f"Уверенность: {results['Logistic Regression']['proba'][results['Logistic Regression']['pred']]:.3f}")
-        cols[0].write(f"Время: {results['Logistic Regression']['time']:.4f} мс")
-
-        cols[1].metric(
-            "Random Forest",
-            f"{results['Random Forest']['class_name']} {results['Random Forest']['emoji']}"
-        )
-        cols[1].write(f"Уверенность: {results['Random Forest']['proba'][results['Random Forest']['pred']]:.3f}")
-        cols[1].write(f"Время: {results['Random Forest']['time']:.4f} мс")
-
-        if results['LSTM'] is not None:
-            cols[2].metric(
-                "LSTM",
-                f"{results['LSTM']['class_name']} {results['LSTM']['emoji']}"
-            )
-            cols[2].write(f"Уверенность: {results['LSTM']['proba'][results['LSTM']['pred']]:.3f}")
-            cols[2].write(f"Время: {results['LSTM']['time']:.4f} мс")
-        else:
-            cols[2].warning("LSTM недоступна")
-
-        cols[3].metric(
-            "ImprovedTinyBERT",
-            f"{results['ImprovedTinyBERT']['class_name']} {results['ImprovedTinyBERT']['emoji']}"
-        )
-        cols[3].write(f"Уверенность: {results['ImprovedTinyBERT']['proba'][results['ImprovedTinyBERT']['pred']]:.3f}")
-        cols[3].write(f"Время: {results['ImprovedTinyBERT']['time']:.4f} мс")
-
-        st.subheader("📊 Уверенность моделей в предсказании")
+        for i, name in enumerate(['Logistic Regression', 'Random Forest', 'LSTM', 'ImprovedTinyBERT']):
+            m = results.get(name)
+            if m:
+                cols[i].metric(name, f"{m['class_name']} {m['emoji']}")
+                cols[i].write(f"Уверенность: {m['proba'][m['pred']]:.3f}")
+                cols[i].write(f"Время: {m['time']:.4f} мс")
+            elif name == 'LSTM':
+                cols[i].warning("LSTM недоступна")
+        st.subheader("📊 Уверенность моделей")
         plot_cols = st.columns(4)
-        for i, m_name in enumerate(['Logistic Regression', 'Random Forest', 'LSTM', 'ImprovedTinyBERT']):
-            m_data = results.get(m_name)
-            if m_data:
+        for i, name in enumerate(['Logistic Regression', 'Random Forest', 'LSTM', 'ImprovedTinyBERT']):
+            m = results.get(name)
+            if m:
                 with plot_cols[i]:
-                    plot_confidence(m_data['proba'], m_name)
-
+                    plot_confidence(m['proba'], name)
     else:
         model_name = st.session_state.selected_mode
         model_data = results.get(model_name)
-
         if model_data is None:
             st.warning(f"Модель {model_name} недоступна.")
         else:
             st.header(f"{model_name}")
+            # Визуализация внимания
+            if model_name == 'ImprovedTinyBERT':
+                st.subheader("🧠 Карта внимания (агрегировано по словам)")
+                st.markdown(highlight_attention(bert_tok, model_data['input_ids'], model_data['attentions'], text), unsafe_allow_html=True)
+                st.caption("Тёплые цвета – высокий вес внимания слова.")
+            if model_name == 'LSTM':
+                st.subheader("🔍 Важность токенов (градиентная карта)")
+                if lstm_model is not None:
+                    html = lstm_token_importance(lstm_model, lstm_tok, text)
+                    st.markdown(html, unsafe_allow_html=True)
+                    st.caption("Яркость – влияние слова. Серые – слова вне словаря модели (неизв).")
+                else:
+                    st.warning("LSTM недоступна")
+            # Метрики
             col_left, col_right = st.columns([0.45, 0.55])
             with col_left:
                 st.metric("Предсказание", f"{model_data['class_name']} {model_data['emoji']}")
@@ -462,28 +528,12 @@ if text.strip():
             with col_right:
                 plot_confidence(model_data['proba'], model_name)
 
-            if model_name == 'ImprovedTinyBERT':
-                st.subheader("🧠 Карта внимания от CLS‑токена к словам")
-                st.markdown(
-                    highlight_attention(bert_tok, model_data['input_ids'], model_data['attentions']),
-                    unsafe_allow_html=True,
-                )
-                st.caption("Тёплые цвета — высокий вес внимания на данном токене.")
-
-# ==================== СВОДНАЯ ТАБЛИЦА МЕТРИК ====================
 st.divider()
 st.subheader("📈 Сравнение моделей на тестовой выборке")
-
 metrics = {
-    "Модель": [
-        "Logistic Regression",
-        "Random Forest",
-        "LSTM",
-        "ImprovedTinyBERT",
-    ],
+    "Модель": ["Logistic Regression", "Random Forest", "LSTM", "ImprovedTinyBERT"],
     "Accuracy": [0.9503, 0.8885, 0.9307, 0.9101],
     "F1‑macro": [0.9489, 0.8868, 0.9288, 0.9073],
     "Inference (ms)": [0.0003, 0.0298, 2.1639, 0.1699],
 }
-
 st.dataframe(metrics, width='stretch')
