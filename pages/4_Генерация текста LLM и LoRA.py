@@ -1,69 +1,22 @@
 import streamlit as st
-import torch
-import gc
-from transformers import AutoModelForCausalLM, AutoTokenizer
-from peft import PeftModel
-from PIL import Image
-import requests
-from io import BytesIO
-from huggingface_hub import snapshot_download
-import base64
 
-# Конфигурация страницы
-st.set_page_config(
-    page_title="Qwen2.5-7B с персонажами",
-    page_icon="🤖",
-    layout="wide"
-)
+st.set_page_config(page_title="Генератор текста", layout="centered")
 
-# Константы
-BASE_MODEL_PATH = "Qwen/Qwen2.5-7B-Instruct"
-ADAPTER_REPO = "prihoslo/qwery_pers"
+st.title("Генератор текста")
 
-# Конфигурация персонажей с обновленными ссылками
-CHARACTERS = {
-    "Йода": {
-        "adapter_subfolder": "qwen-yoda-lora",
-        "system_prompt": "Ты мастер Йода. отвечай как мудрый старый джедай.",
-        "image_url": "https://huggingface.co/prihoslo/qwery_pers/resolve/main/ce315119a36e31077daf1bea09d18dad.jpg",
-        "image_type": "static",
-        "description": "Мудрый джедай-мастер"
-    },
-    "Горлум": {
-        "adapter_subfolder": "qwen-Gorlum-lora",
-        "system_prompt": "Ты Горлум из фильма властелин колец. отвечай на вопросы и комментируй фразы как он.",
-        "image_url": "https://huggingface.co/prihoslo/qwery_pers/resolve/main/download.jpeg",
-        "image_type": "static",
-        "description": "Существо из Властелина Колец"
-    },
-    "АУФ!": {
-        "adapter_subfolder": "qwen-bro-lora",
-        "system_prompt": "Ты — настоящий пацан, брат и волк. Отвечай на вопросы глубокомысленными пацанскими цитатами.",
-        "image_url": "https://huggingface.co/prihoslo/qwery_pers/resolve/main/wolf-dance.gif",
-        "image_type": "gif",
-        "description": "Настоящий пацан с района"
-    },
-    "Без адаптера": {
-        "adapter_subfolder": None,
-        "system_prompt": "",
-        "image_url": "https://huggingface.co/datasets/huggingface/brand-assets/resolve/main/hf-logo.png",
-        "image_type": "static",
-        "description": "Базовая модель Qwen2.5-7B"
-    }
-}
+# Инициализация состояния
+if 'video_playing' not in st.session_state:
+    st.session_state.video_playing = False
 
-def cleanup_memory():
-    """Очистка памяти GPU и CPU"""
-    gc.collect()
-    if torch.cuda.is_available():
-        torch.cuda.empty_cache()
-        torch.cuda.synchronize()
+# Кнопка
+if st.button(" Сгенерировать текст", type="primary"):
+    st.session_state.video_playing = True
 
-@st.cache_resource
-def load_base_model():
-    """Загрузка только базовой модели (выполняется один раз)"""
-    device = "cuda" if torch.cuda.is_available() else "cpu"
+# Отображаем видео, если кнопка была нажата
+if st.session_state.video_playing:
+    st.markdown("Текст для вас можно сгенерировать только на локальной версии Streamlit")
     
+<<<<<<< HEAD
     with st.spinner("🚀 Загрузка базовой модели Qwen2.5-7B..."):
         tokenizer = AutoTokenizer.from_pretrained(BASE_MODEL_PATH, trust_remote_code=True)
         base_model = AutoModelForCausalLM.from_pretrained(
@@ -164,20 +117,26 @@ def generate_response(model, tokenizer, messages, temperature, top_p, max_tokens
         tokenize=False,
         add_generation_prompt=True
     )
+=======
+    # Прямая ссылка на видео с Hugging Face
+    video_url = "https://huggingface.co/prihoslo/qwery_pers/resolve/main/rutube_video_fef8a7569e09458316f2def123beb79c.mp4"
+>>>>>>> a5c4c0b76ee11beb16eaad2a60ecdd0541d61b28
     
-    model_inputs = tokenizer([text], return_tensors="pt").to(model.device)
+    # Воспроизводим видео с автозапуском
+    st.video(video_url, format="video/mp4", autoplay=True)
     
-    # Параметры генерации
-    with torch.no_grad():
-        generated_ids = model.generate(
-            **model_inputs,
-            max_new_tokens=max_tokens,
-            temperature=temperature,
-            top_p=top_p,
-            do_sample=True if temperature > 0 else False,
-            pad_token_id=tokenizer.eos_token_id
-        )
+    # Добавляем кнопку для сброса
+    col1, col2 = st.columns(2)
+    with col1:
+        if st.button("🔄 Сбросить", use_container_width=True):
+            st.session_state.video_playing = False
+            st.rerun()
+    with col2:
+        if st.button("🔁 Сгенерировать снова", use_container_width=True):
+            st.session_state.video_playing = False
+            st.rerun()
     
+<<<<<<< HEAD
     # Извлечение ответа
     generated_ids = [
         output_ids[len(input_ids):] for input_ids, output_ids in zip(model_inputs.input_ids, generated_ids)
@@ -398,3 +357,5 @@ st.markdown(
     """,
     unsafe_allow_html=True
 )
+=======
+>>>>>>> a5c4c0b76ee11beb16eaad2a60ecdd0541d61b28
