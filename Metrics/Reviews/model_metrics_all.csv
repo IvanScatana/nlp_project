@@ -1,0 +1,5 @@
+Model,Accuracy,F1_macro,F1_weighted,Precision_macro,Recall_macro,Inference_ms
+LogReg,0.9503,0.9489,0.9503,0.9478,0.95,0.0003
+RandomForest,0.8885,0.8868,0.8892,0.8844,0.8945,0.0298
+LSTM,0.9307,0.9288,0.9308,0.9274,0.9303,2.1639
+ImprovedTinyBERTFull,0.9101,0.9073,0.9101,0.9073,0.9074,0.1699
