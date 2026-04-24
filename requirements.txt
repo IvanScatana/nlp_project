@@ -6,7 +6,7 @@ matplotlib==3.10.1
 torch==2.11.0
 transformers==5.6.2
 tensorflow==2.19.0
-numpy==2.4.4 
+numpy>=1.26.0,<2.2.0
 peft
 accelerate
 Pillow
