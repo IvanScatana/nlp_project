@@ -83,7 +83,7 @@ class ImprovedTinyBERTFull(nn.Module):
     def forward(self, input_ids, attention_mask, output_attentions=False):
         bert_out = self.bert(input_ids=input_ids,
                              attention_mask=attention_mask,
-                             output_attentions=True)   # всегда получаем attention
+                             output_attentions=True)
         last_hidden = bert_out.last_hidden_state
         attentions = bert_out.attentions
 
@@ -132,7 +132,6 @@ def load_lstm_tokenizer():
 def load_lstm_model():
     path = download_file("best_lstm_model.keras")
     model = tf.keras.models.load_model(path, compile=False)
-    # Принудительная инициализация
     dummy = tf.keras.preprocessing.sequence.pad_sequences([[0]], maxlen=128)
     _ = model.predict(dummy, verbose=0)
     return model
@@ -184,7 +183,6 @@ def predict_bert(tokenizer, model, text):
     return pred, proba, elapsed, inputs['input_ids'][0], attentions
 
 def highlight_attention(tokenizer, input_ids, attentions, text, layer=-1, head=0):
-    """Визуализация attention: агрегация BPE-токенов в слова."""
     if attentions is None or len(attentions) == 0:
         return "<div>Карта внимания недоступна.</div>"
     try:
@@ -193,7 +191,6 @@ def highlight_attention(tokenizer, input_ids, attentions, text, layer=-1, head=0
         tokens = tokenizer.convert_ids_to_tokens(input_ids)
         attn = attentions[layer][0, head, 0, :].detach().numpy()
 
-        # группировка по словам
         word_attn = {}
         word_token_ids = {}
         for i, tok in enumerate(tokens):
@@ -206,8 +203,7 @@ def highlight_attention(tokenizer, input_ids, attentions, text, layer=-1, head=0
             word_attn[wid].append(attn[i])
             word_token_ids[wid].append(input_ids[i].item())
 
-        words = []
-        scores = []
+        words, scores = [], []
         for wid in sorted(word_attn):
             word_str = tokenizer.decode(word_token_ids[wid], skip_special_tokens=True).strip().replace(' ', '')
             words.append(word_str)
@@ -233,8 +229,6 @@ def highlight_attention(tokenizer, input_ids, attentions, text, layer=-1, head=0
         return f"<div>Ошибка визуализации: {e}</div>"
 
 def lstm_token_importance(model, tokenizer, text, max_len=128):
-    """Градиентная карта важности слов для LSTM."""
-    # Находим Embedding слой
     emb_layer = None
     for layer in model.layers:
         if isinstance(layer, tf.keras.layers.Embedding):
@@ -249,7 +243,6 @@ def lstm_token_importance(model, tokenizer, text, max_len=128):
     if not raw_words:
         return "<div>Не удалось выделить слова.</div>"
 
-    # токенизация с учётом размера словаря
     seq = []
     for word in raw_words:
         idx = tokenizer.word_index.get(word, 0)
@@ -259,7 +252,6 @@ def lstm_token_importance(model, tokenizer, text, max_len=128):
     padded = tf.keras.preprocessing.sequence.pad_sequences([seq], maxlen=max_len, padding='post')
     input_tensor = tf.constant(padded)
 
-    # строим модель без эмбеддинга
     tail_layers = model.layers[model.layers.index(emb_layer) + 1:]
     tail_model = tf.keras.Sequential(tail_layers)
 
@@ -307,7 +299,7 @@ def plot_confidence(proba, model_name):
     st.pyplot(fig)
 
 # ------------------------------------------------------------
-# 5. Загрузка отзывов из JSONL с реальными метками
+# 5. Загрузка отзывов из JSONL (гибкий поиск полей content + label/sentiment)
 # ------------------------------------------------------------
 FALLBACK_REVIEWS = [
     {"content": "В регистратуре были очень грубые, хамоватые сотрудницы. Врач ничего не объяснил, я осталась недовольна.", "label": 0},
@@ -324,7 +316,8 @@ FALLBACK_REVIEWS = [
 
 @st.cache_data
 def load_reviews_from_jsonl(filename="Datasets/healthcare_facilities_reviews.jsonl"):
-    """Загружает список словарей {content, label} из JSONL, иначе fallback."""
+    """Загружает список словарей {content, label} (label=0/1) из JSONL.
+       Ищет текстовое поле (content, text, review, message) и поле метки (sentiment, label, target)."""
     try:
         with open(filename, 'r', encoding='utf-8') as f:
             reviews = []
@@ -332,9 +325,29 @@ def load_reviews_from_jsonl(filename="Datasets/healthcare_facilities_reviews.jso
                 line = line.strip()
                 if line:
                     data = json.loads(line)
-                    # Ожидаем поля 'content' и 'label'
-                    if 'content' in data and 'label' in data:
-                        reviews.append({"content": data['content'], "label": int(data['label'])})
+                    # Ищем текстовое поле
+                    text = None
+                    for key in ['content', 'text', 'review', 'message']:
+                        if key in data and isinstance(data[key], str):
+                            text = data[key].strip()
+                            break
+                    # Ищем метку
+                    label_val = None
+                    for key in ['sentiment', 'label', 'target']:
+                        if key in data:
+                            raw = data[key]
+                            # Пробуем интерпретировать
+                            if isinstance(raw, (int, float)):
+                                label_val = int(raw)
+                            elif isinstance(raw, str):
+                                raw_lower = raw.strip().lower()
+                                if raw_lower in ['positive', 'позитивный', 'pos', '1']:
+                                    label_val = 1
+                                elif raw_lower in ['negative', 'негативный', 'neg', '0']:
+                                    label_val = 0
+                            break
+                    if text and label_val is not None and label_val in (0, 1):
+                        reviews.append({"content": text, "label": label_val})
             if not reviews:
                 st.warning("Файл с отзывами не содержит подходящих записей, используются примеры по умолчанию.")
                 return FALLBACK_REVIEWS
@@ -344,11 +357,12 @@ def load_reviews_from_jsonl(filename="Datasets/healthcare_facilities_reviews.jso
         return FALLBACK_REVIEWS
 
 def get_sentiment_display(label):
-    """Преобразует метку (0/1) в читаемое имя с эмодзи."""
-    if label == 0:
-        return "Негативный 😡"
-    elif label == 1:
-        return "Позитивный 😊"
+    """Преобразует метку 0/1 в читаемое имя с эмодзи."""
+    if isinstance(label, int):
+        if label == 0:
+            return "Негативный 😡"
+        elif label == 1:
+            return "Позитивный 😊"
     return str(label)
 
 # ------------------------------------------------------------
@@ -386,7 +400,7 @@ if 'preds' not in st.session_state:
 col_rand, _ = st.columns([0.2, 0.8])
 with col_rand:
     if st.button("🎲 Случайный отзыв"):
-        rand_review = np.random.choice(SAMPLE_REVIEWS)  # теперь это словарь
+        rand_review = np.random.choice(SAMPLE_REVIEWS)
         st.session_state.input_text = rand_review["content"]
         st.session_state.true_sentiment = rand_review["label"]
         st.session_state.random_count += 1
