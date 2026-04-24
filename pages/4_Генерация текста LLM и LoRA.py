@@ -152,7 +152,7 @@ def display_character_image(image_data, image_type, character_name):
             # Для статических изображений используем st.image
             col1, col2, col3 = st.columns([1, 2, 1])
             with col2:
-                st.image(image_data, caption=character_name, use_container_width=True)
+                st.image(image_data, caption=character_name, width='stretch')
     else:
         st.warning("Не удалось загрузить изображение")
 
@@ -254,7 +254,7 @@ with st.sidebar:
     
     # Добавляем кнопку для принудительной очистки кэша
     st.markdown("---")
-    if st.button("🗑️ Очистить кэш моделей", use_container_width=True):
+    if st.button("🗑️ Очистить кэш моделей", width='stretch'):
         st.session_state.current_char = None
         st.session_state.current_model = None
         cleanup_memory()
@@ -286,7 +286,7 @@ with col1:
     )
     
     # Кнопка генерации
-    if st.button("🚀 Получить ответ", type="primary", use_container_width=True):
+    if st.button("🚀 Получить ответ", type="primary", width='stretch'):
         if not user_question.strip():
             st.warning("Пожалуйста, введите вопрос!")
         else:
@@ -381,7 +381,7 @@ with col2:
     ]
     
     for example in examples:
-        if st.button(example, key=f"ex_{example}", use_container_width=True):
+        if st.button(example, key=f"ex_{example}", width='stretch'):
             st.session_state['example_question'] = example
     
     if 'example_question' in st.session_state:
